@@ -47,8 +47,8 @@ final class HeadphoneLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private var channel: IOBluetoothRFCOMMChannel?
     private var decoder = FrameDecoder()
     private var sequence: UInt8 = 0
-    private var queue: [[UInt8]] = []
-    private var inFlight: (payload: [UInt8], attempt: Int)?
+    private var queue: [Request] = []
+    private var inFlight: (request: Request, attempt: Int)?
     private var ackTimeoutTask: Task<Void, Never>?
     private var openTimeoutTask: Task<Void, Never>?
     private var openAttempt = 0
@@ -85,9 +85,12 @@ final class HeadphoneLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
         queue.removeAll()
     }
 
-    func send(_ payload: [UInt8]) {
-        queue.removeAll { $0.first == payload.first }
-        queue.append(payload)
+    func send(_ request: Request) {
+        if let index = queue.firstIndex(where: { $0.type == request.type && $0.coalescingKey == request.coalescingKey }) {
+            queue[index] = request
+        } else {
+            queue.append(request)
+        }
         sendNext()
     }
 
@@ -153,9 +156,9 @@ final class HeadphoneLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
         transmit(queue.removeFirst(), attempt: 1)
     }
 
-    private func transmit(_ payload: [UInt8], attempt: Int) {
-        inFlight = (payload, attempt)
-        write(Frame(type: .command1, sequence: sequence, payload: payload))
+    private func transmit(_ request: Request, attempt: Int) {
+        inFlight = (request, attempt)
+        write(Frame(type: request.type, sequence: sequence, payload: request.payload))
         ackTimeoutTask?.cancel()
         ackTimeoutTask = Task { [weak self] in
             try? await Task.sleep(for: Self.ackTimeout)
@@ -168,9 +171,9 @@ final class HeadphoneLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
         guard let inFlight else { return }
         self.inFlight = nil
         if inFlight.attempt < Self.maxSendAttempts {
-            transmit(inFlight.payload, attempt: inFlight.attempt + 1)
+            transmit(inFlight.request, attempt: inFlight.attempt + 1)
         } else {
-            Self.log.error("No ACK for payload \(Self.hex(inFlight.payload), privacy: .public)")
+            Self.log.error("No ACK for payload \(Self.hex(inFlight.request.payload), privacy: .public)")
             sendNext()
         }
     }
@@ -184,13 +187,11 @@ final class HeadphoneLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 inFlight = nil
                 ackTimeoutTask?.cancel()
                 sendNext()
-            case .command1:
+            case .command1, .command2:
                 acknowledge(frame)
-                if let event = HeadphoneEvent(payload: frame.payload) {
+                if let type = frame.messageType, let event = HeadphoneEvent(type: type, payload: frame.payload) {
                     onEvent?(event)
                 }
-            case .command2:
-                acknowledge(frame)
             case nil:
                 break
             }

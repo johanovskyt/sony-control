@@ -16,7 +16,14 @@ public final class HeadphoneController {
     public private(set) var deviceName: String?
     public private(set) var soundControl = SoundControl(mode: .noiseCancelling, ambientLevel: 10, focusOnVoice: false)
     public private(set) var battery: Battery?
-    public private(set) var speakToChat: Bool?
+    public private(set) var switches: [DeviceSwitch: Bool] = [:]
+    public private(set) var equalizer: Equalizer?
+    public private(set) var speakToChatConfig: SpeakToChatConfig?
+    public private(set) var optimizerStatus: OptimizerStatus = .notRunning
+    public private(set) var optimizerPressure: Double?
+    public private(set) var codec: AudioCodec?
+    public private(set) var firmwareVersion: String?
+    public private(set) var usageStatistics: [String: Int] = [:]
 
     @ObservationIgnored private var link: HeadphoneLink?
     @ObservationIgnored private var observer: BluetoothConnectionObserver?
@@ -96,17 +103,66 @@ public final class HeadphoneController {
         updateSoundControl { $0.focusOnVoice = enabled }
     }
 
-    public func setSpeakToChat(_ enabled: Bool) {
-        guard isConnected, let link else { return }
-        speakToChat = enabled
-        link.send(SonyCommand.setSpeakToChat(enabled))
+    public func setSwitch(_ deviceSwitch: DeviceSwitch, _ enabled: Bool) {
+        guard let link = connectedLink() else { return }
+        switches[deviceSwitch] = enabled
+        link.send(SonyCommand.set(deviceSwitch, enabled))
+    }
+
+    public func setEqualizerPreset(_ preset: EqualizerPreset) {
+        guard let link = connectedLink() else { return }
+        equalizer?.preset = preset
+        link.send(SonyCommand.setEqualizerPreset(preset))
+    }
+
+    public func setEqualizerBands(clearBass: Int, bands: [Int]) {
+        guard let link = connectedLink(), var updated = equalizer else { return }
+        if !updated.preset.hasEditableBands {
+            updated.preset = .manual
+            link.send(SonyCommand.setEqualizerPreset(.manual))
+        }
+        updated.clearBass = clearBass
+        updated.bands = bands
+        equalizer = updated
+        link.send(SonyCommand.setEqualizerBands(clearBass: clearBass, bands: bands))
+        link.send(SonyCommand.getEqualizer)
+    }
+
+    public func setSpeakToChatConfig(_ config: SpeakToChatConfig) {
+        guard let link = connectedLink() else { return }
+        speakToChatConfig = config
+        link.send(SonyCommand.setSpeakToChatConfig(config))
+    }
+
+    public func startOptimizer() {
+        guard let link = connectedLink() else { return }
+        optimizerStatus = .checkingFit
+        link.send(SonyCommand.runOptimizer(true))
+    }
+
+    public func cancelOptimizer() {
+        guard let link = connectedLink() else { return }
+        link.send(SonyCommand.runOptimizer(false))
+    }
+
+    public func refreshUsageStatistics() {
+        connectedLink()?.send(SonyCommand.getUsageStatistics)
+    }
+
+    public func powerOff() {
+        connectedLink()?.send(SonyCommand.powerOff)
+    }
+
+    private func connectedLink() -> HeadphoneLink? {
+        guard isConnected, let link else {
+            reconnectIfNeeded()
+            return nil
+        }
+        return link
     }
 
     private func updateSoundControl(_ change: (inout SoundControl) -> Void) {
-        guard isConnected, let link else {
-            reconnectIfNeeded()
-            return
-        }
+        guard let link = connectedLink() else { return }
         change(&soundControl)
         link.send(SonyCommand.setSoundControl(soundControl))
         if soundControl.mode == .ambient {
@@ -151,7 +207,15 @@ public final class HeadphoneController {
         }
         switch event {
         case .initialized:
-            for request in [SonyCommand.getSoundControl, SonyCommand.getBattery, SonyCommand.getSpeakToChat] {
+            let essentials = [SonyCommand.getSoundControl, SonyCommand.getBattery]
+            let details = [
+                SonyCommand.getEqualizer,
+                SonyCommand.getSpeakToChatConfig,
+                SonyCommand.getOptimizerResult,
+                SonyCommand.getCodec,
+                SonyCommand.getFirmware,
+            ]
+            for request in essentials + DeviceSwitch.allCases.map(SonyCommand.get) + details {
                 link?.send(request)
             }
         case .soundControl(let reported):
@@ -163,8 +227,25 @@ public final class HeadphoneController {
             }
         case .battery(let battery):
             self.battery = battery
-        case .speakToChat(let enabled):
-            speakToChat = enabled
+        case .deviceSwitch(let deviceSwitch, let enabled):
+            switches[deviceSwitch] = enabled
+        case .equalizer(let equalizer):
+            self.equalizer = equalizer
+        case .speakToChatConfig(let config):
+            speakToChatConfig = config
+        case .optimizerStatus(let status):
+            optimizerStatus = status
+            if status == .finished {
+                link?.send(SonyCommand.getOptimizerResult)
+            }
+        case .optimizerResult(let pressure):
+            optimizerPressure = pressure
+        case .codec(let codec):
+            self.codec = codec
+        case .firmware(let version):
+            firmwareVersion = version
+        case .usageStatistics(let counters):
+            usageStatistics.merge(counters) { _, latest in latest }
         }
     }
 

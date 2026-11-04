@@ -25,12 +25,12 @@ struct ControlPanel: View {
                         .transition(.blurReplace)
                 }
 
-                if let speakToChat = controller.speakToChat {
+                if controller.switches[.speakToChat] != nil {
                     GlassCard {
                         SwitchRow(
                             title: "Speak-to-Chat",
                             symbol: "bubble.left.and.bubble.right",
-                            isOn: Binding(get: { speakToChat }, set: controller.setSpeakToChat)
+                            isOn: controller.binding(for: .speakToChat)
                         )
                     }
                 }
@@ -251,17 +251,25 @@ private struct ConnectionStatus: View {
 
 private struct PanelFooter: View {
     let state: PanelState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack {
             Toggle("Open at login", isOn: Binding(get: { state.opensAtLogin }, set: updateLoginItem))
                 .toggleStyle(.checkbox)
             Spacer()
+            Button("Advanced…", action: openAdvancedWindow)
+                .buttonStyle(.glass)
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.glass)
         }
         .controlSize(.small)
         .padding(.top, 2)
+    }
+
+    private func openAdvancedWindow() {
+        openWindow(id: AdvancedView.windowID)
+        NSApplication.shared.activate()
     }
 
     private func updateLoginItem(_ enabled: Bool) {
