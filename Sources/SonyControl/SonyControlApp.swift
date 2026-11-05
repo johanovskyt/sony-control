@@ -58,9 +58,31 @@ struct MenuBarIcon: View {
     let settings: AppSettings
 
     var body: some View {
-        Image(systemName: controller.isConnected ? controller.soundControl.mode.menuBarSymbol : "headphones.slash")
+        Image(nsImage: menuBarImage)
         if settings.batteryInMenuBar, controller.isConnected, let battery = controller.battery {
             Text("\(battery.level)%")
         }
+    }
+
+    private var menuBarImage: NSImage {
+        let name = controller.isConnected ? controller.soundControl.mode.menuBarSymbol : "headphones.slash"
+        let size = NSSize(width: 18, height: 18)
+
+        // Render at an explicit size because MenuBarExtra controls SwiftUI symbol sizing.
+        let image = NSImage(size: size, flipped: false) { bounds in
+            guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return false }
+            let scale = min(bounds.width / symbol.size.width, bounds.height / symbol.size.height)
+            let symbolSize = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
+            symbol.draw(in: NSRect(
+                x: bounds.midX - symbolSize.width / 2,
+                y: bounds.midY - symbolSize.height / 2,
+                width: symbolSize.width,
+                height: symbolSize.height
+            ))
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Sony Control"
+        return image
     }
 }
